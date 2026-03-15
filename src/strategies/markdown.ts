@@ -1,95 +1,120 @@
-import type { Chunk } from '../types.js'
+import type { Chunk, Tokenizer } from '../types.js'
 
 /**
  * Markdown-aware chunking.
  * Splits on heading boundaries (## and above) first, then on paragraphs.
  * Preserves code blocks intact when possible.
+ * Attaches heading hierarchy as metadata.
  */
-export function chunkMarkdown(text: string, maxSize: number, overlap: number): Chunk[] {
+export function chunkMarkdown(text: string, maxSize: number, overlap: number, tokenizer?: Tokenizer): Chunk[] {
   if (text.length === 0) return []
   if (maxSize <= 0) throw new Error('maxSize must be positive')
   if (overlap >= maxSize) throw new Error('overlap must be less than maxSize')
 
+  const measure = tokenizer ? (t: string) => tokenizer.count(t) : (t: string) => t.length
+
   const sections = splitBySections(text)
-  const rawChunks = fitToSize(sections, maxSize)
-  return buildChunks(text, rawChunks, overlap, maxSize)
+  const rawChunks = fitToSize(sections, maxSize, measure)
+  const chunks = buildChunks(text, rawChunks.map(s => s.content), overlap, maxSize, measure, tokenizer)
+
+  // Attach heading metadata
+  for (let i = 0; i < chunks.length; i++) {
+    if (i < rawChunks.length && rawChunks[i].headings.length > 0) {
+      chunks[i].metadata = { ...chunks[i].metadata, headings: rawChunks[i].headings }
+    }
+  }
+
+  return chunks
 }
 
-/**
- * Split markdown into sections by headings (# to ###).
- * Each section includes its heading.
- */
-function splitBySections(text: string): string[] {
+interface Section {
+  content: string
+  headings: string[]
+}
+
+function splitBySections(text: string): Section[] {
   const lines = text.split('\n')
-  const sections: string[] = []
+  const sections: Section[] = []
   let current: string[] = []
+  let headings: string[] = []
 
   for (const line of lines) {
     if (/^#{1,3}\s/.test(line) && current.length > 0) {
-      sections.push(current.join('\n'))
+      sections.push({ content: current.join('\n'), headings: [...headings] })
       current = [line]
+      // Update heading stack
+      const level = line.match(/^(#{1,3})\s/)
+      if (level) {
+        const depth = level[1].length
+        headings = headings.filter(h => {
+          const hMatch = h.match(/^(#{1,3})\s/)
+          return hMatch ? hMatch[1].length < depth : false
+        })
+        headings.push(line.trim())
+      }
     } else {
+      if (/^#{1,3}\s/.test(line)) {
+        const level = line.match(/^(#{1,3})\s/)
+        if (level) {
+          const depth = level[1].length
+          headings = headings.filter(h => {
+            const hMatch = h.match(/^(#{1,3})\s/)
+            return hMatch ? hMatch[1].length < depth : false
+          })
+          headings.push(line.trim())
+        }
+      }
       current.push(line)
     }
   }
 
   if (current.length > 0) {
-    sections.push(current.join('\n'))
+    sections.push({ content: current.join('\n'), headings: [...headings] })
   }
 
   return sections
 }
 
-/**
- * Fit sections into chunks that respect maxSize.
- * Large sections are split further by paragraphs, then by code blocks.
- */
-function fitToSize(sections: string[], maxSize: number): string[] {
-  const result: string[] = []
+function fitToSize(sections: Section[], maxSize: number, measure: (t: string) => number): Section[] {
+  const result: Section[] = []
 
   for (const section of sections) {
-    if (section.length <= maxSize) {
+    if (measure(section.content) <= maxSize) {
       result.push(section)
       continue
     }
 
-    // Split large sections by paragraphs
-    const paragraphs = splitByParagraphs(section)
+    const paragraphs = splitByParagraphs(section.content)
     let current = ''
 
     for (const para of paragraphs) {
-      if (para.length > maxSize) {
-        // Push accumulated content
+      if (measure(para) > maxSize) {
         if (current) {
-          result.push(current)
+          result.push({ content: current, headings: section.headings })
           current = ''
         }
-        // Force-split oversized paragraph
         for (let i = 0; i < para.length; i += maxSize) {
-          result.push(para.slice(i, i + maxSize))
+          result.push({ content: para.slice(i, i + maxSize), headings: section.headings })
         }
         continue
       }
 
       const candidate = current ? current + '\n\n' + para : para
 
-      if (candidate.length <= maxSize) {
+      if (measure(candidate) <= maxSize) {
         current = candidate
       } else {
-        if (current) result.push(current)
+        if (current) result.push({ content: current, headings: section.headings })
         current = para
       }
     }
 
-    if (current) result.push(current)
+    if (current) result.push({ content: current, headings: section.headings })
   }
 
   return result
 }
 
-/**
- * Split text by paragraph breaks, keeping code blocks intact.
- */
 function splitByParagraphs(text: string): string[] {
   const blocks: string[] = []
   const lines = text.split('\n')
@@ -123,7 +148,14 @@ function splitByParagraphs(text: string): string[] {
   return blocks
 }
 
-function buildChunks(original: string, rawChunks: string[], overlap: number, maxSize: number): Chunk[] {
+function buildChunks(
+  original: string,
+  rawChunks: string[],
+  overlap: number,
+  maxSize: number,
+  measure: (t: string) => number,
+  tokenizer?: Tokenizer,
+): Chunk[] {
   const result: Chunk[] = []
   let searchFrom = 0
 
@@ -143,20 +175,19 @@ function buildChunks(original: string, rawChunks: string[], overlap: number, max
     searchFrom = start + content.length
   }
 
-  // Apply overlap
   if (overlap > 0 && result.length > 1) {
     for (let i = 1; i < result.length; i++) {
       const overlapStart = Math.max(result[i].start - overlap, result[i - 1].start)
       const prefix = original.slice(overlapStart, result[i].start)
       let content = prefix + result[i].content
 
-      if (content.length > maxSize) {
-        content = content.slice(0, maxSize)
+      if (measure(content) > maxSize) {
+        content = tokenizer ? tokenizer.truncate(content, maxSize) : content.slice(0, maxSize)
       }
 
       result[i] = {
+        ...result[i],
         content,
-        index: i,
         start: overlapStart,
         end: overlapStart + content.length,
         length: content.length,

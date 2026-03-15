@@ -108,4 +108,23 @@ describe('markdown strategy', () => {
       assert.strictEqual(typeof c.index, 'number')
     }
   })
+
+  it('attaches heading hierarchy as metadata', () => {
+    const text = [
+      '# Main Title',
+      'Intro text.',
+      '',
+      '## Section A',
+      'Content of A.',
+      '',
+      '### Subsection A1',
+      'Detail of A1.',
+    ].join('\n')
+
+    const result = chunk(text, { strategy: 'markdown', maxSize: 60, overlap: 0 })
+
+    // At least one chunk should have heading metadata
+    const withHeadings = result.filter(c => c.metadata?.headings && c.metadata.headings.length > 0)
+    assert.ok(withHeadings.length > 0, 'Should have chunks with heading metadata')
+  })
 })

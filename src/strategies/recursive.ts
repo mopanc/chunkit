@@ -1,9 +1,7 @@
-import type { Chunk } from '../types.js'
+import type { Chunk, Tokenizer } from '../types.js'
 
 /**
  * Separators ordered from largest to smallest semantic unit.
- * We try to split on the largest separator first, then recurse
- * with smaller separators for any oversized pieces.
  */
 const SEPARATORS = ['\n\n', '\n', '. ', ', ', ' ', '']
 
@@ -12,17 +10,19 @@ const SEPARATORS = ['\n\n', '\n', '. ', ', ', ' ', '']
  * Attempts to split on paragraph breaks first, then line breaks,
  * then sentences, then words, preserving semantic coherence.
  */
-export function chunkRecursive(text: string, maxSize: number, overlap: number): Chunk[] {
+export function chunkRecursive(text: string, maxSize: number, overlap: number, tokenizer?: Tokenizer): Chunk[] {
   if (text.length === 0) return []
   if (maxSize <= 0) throw new Error('maxSize must be positive')
   if (overlap >= maxSize) throw new Error('overlap must be less than maxSize')
 
-  const rawChunks = splitRecursive(text, maxSize, SEPARATORS)
-  return mergeWithOverlap(text, rawChunks, maxSize, overlap)
+  const measure = tokenizer ? (t: string) => tokenizer.count(t) : (t: string) => t.length
+
+  const rawChunks = splitRecursive(text, maxSize, SEPARATORS, measure)
+  return mergeWithOverlap(text, rawChunks, maxSize, overlap, measure, tokenizer)
 }
 
-function splitRecursive(text: string, maxSize: number, separators: string[]): string[] {
-  if (text.length <= maxSize) return [text]
+function splitRecursive(text: string, maxSize: number, separators: string[], measure: (t: string) => number): string[] {
+  if (measure(text) <= maxSize) return [text]
 
   const separator = separators[0]
   const remaining = separators.slice(1)
@@ -43,14 +43,13 @@ function splitRecursive(text: string, maxSize: number, separators: string[]): st
   for (const piece of splits) {
     const candidate = current ? current + separator + piece : piece
 
-    if (candidate.length <= maxSize) {
+    if (measure(candidate) <= maxSize) {
       current = candidate
     } else {
       if (current) result.push(current)
 
-      if (piece.length > maxSize && remaining.length > 0) {
-        // Piece itself is too large — recurse with smaller separator
-        result.push(...splitRecursive(piece, maxSize, remaining))
+      if (measure(piece) > maxSize && remaining.length > 0) {
+        result.push(...splitRecursive(piece, maxSize, remaining, measure))
         current = ''
       } else {
         current = piece
@@ -62,11 +61,14 @@ function splitRecursive(text: string, maxSize: number, separators: string[]): st
   return result
 }
 
-/**
- * Takes raw chunks and re-maps them to the original text positions,
- * adding overlap between consecutive chunks.
- */
-function mergeWithOverlap(original: string, rawChunks: string[], maxSize: number, overlap: number): Chunk[] {
+function mergeWithOverlap(
+  original: string,
+  rawChunks: string[],
+  maxSize: number,
+  overlap: number,
+  measure: (t: string) => number,
+  tokenizer?: Tokenizer,
+): Chunk[] {
   if (overlap === 0) {
     return mapPositions(original, rawChunks)
   }
@@ -81,7 +83,6 @@ function mergeWithOverlap(original: string, rawChunks: string[], maxSize: number
     let start = chunk.start
     let content = chunk.content
 
-    // Extend backwards into previous chunk for overlap
     if (i > 0 && overlap > 0) {
       const overlapStart = Math.max(chunk.start - overlap, positioned[i - 1].start)
       const prefix = original.slice(overlapStart, chunk.start)
@@ -89,9 +90,8 @@ function mergeWithOverlap(original: string, rawChunks: string[], maxSize: number
       content = prefix + content
     }
 
-    // Trim if overlap made it too large
-    if (content.length > maxSize) {
-      content = content.slice(0, maxSize)
+    if (measure(content) > maxSize) {
+      content = tokenizer ? tokenizer.truncate(content, maxSize) : content.slice(0, maxSize)
     }
 
     result.push({
@@ -106,9 +106,6 @@ function mergeWithOverlap(original: string, rawChunks: string[], maxSize: number
   return result
 }
 
-/**
- * Maps raw chunk strings back to their positions in the original text.
- */
 function mapPositions(original: string, chunks: string[]): Chunk[] {
   const result: Chunk[] = []
   let searchFrom = 0
