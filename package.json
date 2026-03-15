@@ -1,0 +1,44 @@
+{
+  "name": "chunkit",
+  "version": "1.0.0",
+  "description": "Smart document chunking for RAG pipelines. Fixed-size, recursive, and markdown-aware strategies.",
+  "author": "Jorge Morais",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0"
+  },
+  "keywords": [
+    "chunking",
+    "rag",
+    "text-splitting",
+    "llm",
+    "embeddings",
+    "document-processing",
+    "markdown"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mopanc/chunkit"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
